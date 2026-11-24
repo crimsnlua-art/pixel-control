@@ -194,8 +194,20 @@ class FakeMediaSource(private val clock: Clock) : MediaSource {
     override fun hasLocationAccess(): Boolean = location
     override fun list(addedSinceSec: Long): List<MediaItem> = items.filter { it.dateAddedSec >= addedSinceSec }
     override fun stat(id: Long): MediaItem? = items.firstOrNull { it.id == id }
-    override fun openOriginal(uri: String): InputStream? =
-        if (uri in gone) null else data[uri]?.let { ByteArrayInputStream(it) }
+    /** 파일을 열 때마다 불리는 훅(시험에서 시계를 흘려 보내는 데 쓴다) */
+    var onOpen: (() -> Unit)? = null
+
+    /** 스트림을 한 번 읽을 때마다 불리는 훅(큰 파일 하나를 읽는 동안 시간이 흐르는 상황을 흉내) */
+    var onRead: (() -> Unit)? = null
+
+    override fun openOriginal(uri: String): InputStream? {
+        onOpen?.invoke()
+        if (uri in gone) return null
+        val bytes = data[uri] ?: return null
+        return object : ByteArrayInputStream(bytes) {
+            override fun read(b: ByteArray, off: Int, len: Int): Int { onRead?.invoke(); return super.read(b, off, len) }
+        }
+    }
 }
 
 fun randomBytes(n: Int, seed: Long = 1): ByteArray = ByteArray(n).also { java.util.Random(seed).nextBytes(it) }

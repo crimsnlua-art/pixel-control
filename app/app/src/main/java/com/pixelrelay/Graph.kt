@@ -114,12 +114,15 @@ object Graph {
     val lanConnector by lazy { NsdLanConnector(app, settings, clock) }
     val remoteStatus by lazy { RemoteStatusStore(meta, clock) }
     val ledgerSync by lazy { LedgerSync(senderLedger, meta) }
-    val senderCommands by lazy { SenderCommands(lanConnector, drive, net) }
+    val senderCommands by lazy { SenderCommands(lanConnector, drive, net) { driveUsed() } }
 
     val scanner by lazy { MediaScanner(mediaSource, senderLedger, clock) { settings.senderBlocking() } }
     val trialRunner by lazy {
         com.pixelrelay.sender.FreeTrialRunner(com.pixelrelay.sender.TrialStore(meta), drive, mediaSource, scanner, senderLedger, remoteStatus, clock)
     }
+
+    /** 구글 드라이브를 쓰는가(연결 안 함을 고르지 않았으면 true) */
+    suspend fun driveUsed(): Boolean = (meta.getLong(com.pixelrelay.core.DriveUse.KEY_SKIPPED) ?: 0L) != 1L
 
     fun buildEngine(): SenderEngine {
         return SenderEngine(
@@ -141,6 +144,7 @@ object Graph {
             notifier = AndroidSenderNotifier(app),
             commands = senderCommands,
             trialStep = { trialRunner.step() },
+            driveEnabled = { driveUsed() },
         )
     }
 

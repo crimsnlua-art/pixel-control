@@ -24,6 +24,9 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- 앱 안 업데이트: 내려받은 APK 의 설치 확인 화면을 띄운다(무음 설치 아님) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- Android 16+ 로컬 네트워크 권한(문자열로 선언, 기기에 없으면 무시됨. 실기 확인 필요) -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" tools:ignore="ProtectedPermissions,UnusedAttribute" />
 
@@ -53,10 +56,15 @@
             android:foregroundServiceType="dataSync" />
 
         <receiver
+            android:name=".update.InstallResultReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".receiver.BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
     </application>

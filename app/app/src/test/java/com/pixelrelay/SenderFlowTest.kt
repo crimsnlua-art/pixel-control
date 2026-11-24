@@ -45,12 +45,13 @@ class ScannerTest {
     fun `60초 동안 크기·수정 시각이 그대로여야 해시한다(바뀌면 처음부터)`() = runBlocking {
         val e = env()
         val b = randomBytes(2000, 71)
-        e.source.add("a.jpg", b, modifiedSec = 1000)
+        val recent = e.clock.nowMs() / 1000   // 수정 시각이 방금(최근)이어야 60초 안정 조건을 기다린다
+        e.source.add("a.jpg", b, modifiedSec = recent)
         e.scanner.scan()
         e.clock.advance(59_000)
         assertEquals(0, e.scanner.scan().registered)               // 59초: 아직
         // 수정 시각이 바뀌면 기준 시각이 다시 시작
-        e.source.replace(0) { it.copy(dateModifiedSec = 1001) }
+        e.source.replace(0) { it.copy(dateModifiedSec = recent + 1) }
         e.scanner.scan()
         e.clock.advance(59_000)
         assertEquals(0, e.scanner.scan().registered)

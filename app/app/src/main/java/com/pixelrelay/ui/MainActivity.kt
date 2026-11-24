@@ -167,29 +167,33 @@ fun PermissionRow(label: String, perms: List<String>) {
 
 /** 구글 드라이브(appDataFolder) 연결. 동의 화면이 필요하면 시스템 승인 창을 연다. */
 @Composable
-fun AccountSection() {
+fun AccountSection(allowSkip: Boolean = false) {
     val scope = rememberCoroutineScope()
     var msg by remember { mutableStateOf("") }
     val authProblem by poll(3000) { (Graph.meta.getLong("driveAuthProblem") ?: 0L) == 1L }
+    val skipped by poll(3000) { allowSkip && (Graph.meta.getLong(com.pixelrelay.core.DriveUse.KEY_SKIPPED) ?: 0L) == 1L }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) {
         scope.launch {
             msg = try {
                 Graph.tokens.token(false)
                 Graph.meta.putLong("driveAuthProblem", 0)
                 Graph.meta.putLong("googleLinked", 1)
+                Graph.meta.putLong(com.pixelrelay.core.DriveUse.KEY_SKIPPED, 0)
                 "연결됨"
             } catch (e: Exception) { "승인이 끝나지 않았습니다: ${e.message}" }
         }
     }
     Section("구글 계정(드라이브) 연결") {
         Text("집 밖 전송과 상태 확인에 씁니다. 두 폰 모두 같은 구글 계정으로 연결하세요. (앱 전용 숨은 폴더만 사용)")
-        if (authProblem == true) Text("인증이 필요합니다. 아래 버튼으로 다시 승인하세요.", color = MaterialTheme.colorScheme.error)
+        if (authProblem == true && skipped != true) Text("인증이 필요합니다. 아래 버튼으로 다시 승인하세요.", color = MaterialTheme.colorScheme.error)
+        if (skipped == true) Text("연결 안 함으로 설정됨: 집 와이파이(LAN)에서만 보냅니다.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         Button(onClick = {
             scope.launch {
                 msg = try {
                     Graph.tokens.token(false)
                     Graph.meta.putLong("driveAuthProblem", 0)
                     Graph.meta.putLong("googleLinked", 1)
+                    Graph.meta.putLong(com.pixelrelay.core.DriveUse.KEY_SKIPPED, 0)
                     "연결됨"
                 } catch (e: DriveAuthException) {
                     val pi = e.pendingIntent
@@ -198,6 +202,14 @@ fun AccountSection() {
                 } catch (e: Exception) { "오류: ${e.message}" }
             }
         }) { Text("구글 계정 연결") }
+        if (!allowSkip) {
+        } else if (skipped == true) {
+            OutlinedButton(onClick = { scope.launch { Graph.meta.putLong(com.pixelrelay.core.DriveUse.KEY_SKIPPED, 0); msg = "연결 안 함을 해제했습니다" } }) { Text("연결 안 함 해제") }
+        } else {
+            OutlinedButton(onClick = {
+                scope.launch { Graph.meta.putLong(com.pixelrelay.core.DriveUse.KEY_SKIPPED, 1); msg = "연결 안 함으로 설정했습니다(집 와이파이 전용). 집 밖 전송은 쓰지 않습니다." }
+            }) { Text("연결 안 함(집 와이파이에서만 보내기)") }
+        }
         if (msg.isNotEmpty()) Text(msg)
     }
 }

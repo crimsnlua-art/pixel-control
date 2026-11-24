@@ -35,6 +35,7 @@ class SettingsStore(private val ctx: Context) {
         private val PHOTO_MOBILE = booleanPreferencesKey("photoOverMobile")
         private val VIDEO_MOBILE = booleanPreferencesKey("videoOverMobile")
         private val DAILY_LIMIT = longPreferencesKey("dailyLimitBytes")
+        private val SEND_FROM = longPreferencesKey("sendFromSec")
         private val PAIR_HOST = stringPreferencesKey("pairHost")
         private val PAIR_KEY = stringPreferencesKey("pairKey")
         private val RECV_KEYS = stringSetPreferencesKey("receiverPairedKeys")
@@ -72,6 +73,7 @@ class SettingsStore(private val ctx: Context) {
             videoOverMobile = p[VIDEO_MOBILE] ?: d.videoOverMobile,
             dailyLimitBytes = p[DAILY_LIMIT] ?: d.dailyLimitBytes,
             roleSetAtSec = p[ROLE_AT] ?: 0L,
+            sendFromSec = p[SEND_FROM],
         )
     }
 
@@ -87,6 +89,11 @@ class SettingsStore(private val ctx: Context) {
             it[VIDEO_MOBILE] = s.videoOverMobile
             it[DAILY_LIMIT] = s.dailyLimitBytes
         }
+    }
+
+    /** 기존 사진 보내기 기준(null = 안 보냄, 0 = 전부, 그 밖 = 이 시각(초) 이후). */
+    suspend fun setSendFrom(sec: Long?) {
+        ds.edit { if (sec == null) it.remove(SEND_FROM) else it[SEND_FROM] = sec }
     }
 
     val pairingFlow: Flow<PairingInfo?> = ds.data.map {

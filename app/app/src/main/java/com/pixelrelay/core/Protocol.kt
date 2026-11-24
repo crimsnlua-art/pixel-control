@@ -56,7 +56,7 @@ object WarnCode {
     const val DRIVE_AUTH = "DRIVE_AUTH"
 
     fun korean(code: String): String = when (code) {
-        PHOTOS_STALLED -> "포토 백업 신호가 6시간 넘게 없음"
+        PHOTOS_STALLED -> "포토 백업 신호가 6시간 넘게 없음 — 픽셀의 구글 포토 로그인이 풀렸는지 확인하세요"
         LOW_SPACE -> "픽셀 저장 공간 부족(4GB 미만)"
         HIGH_TEMP -> "픽셀 온도 높음(40도 초과), 받기 중지"
         UNPLUG_SUGGESTED -> "충전기를 뽑는 것을 권장(80% 이상)"

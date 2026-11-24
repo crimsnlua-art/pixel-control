@@ -15,6 +15,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -37,7 +42,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.pixelrelay.Graph
+import com.pixelrelay.core.BackfillDates
+import com.pixelrelay.core.BackfillMode
+import com.pixelrelay.core.DriveUse
+import com.pixelrelay.core.FolderRow
+import com.pixelrelay.core.FolderSelection
 import com.pixelrelay.core.GB
+import com.pixelrelay.core.SendProgress
 import com.pixelrelay.core.QueueMode
 import com.pixelrelay.core.ReceiverConfig
 import com.pixelrelay.core.RemoteCommand
@@ -45,6 +56,7 @@ import com.pixelrelay.core.SendState
 import com.pixelrelay.core.SenderSettings
 import com.pixelrelay.core.WarnCode
 import com.pixelrelay.core.db.SendEntry
+import com.pixelrelay.sender.FailureText
 import com.pixelrelay.sender.NsdFinder
 import com.pixelrelay.sender.PixelPairing
 import com.pixelrelay.sender.HttpPixelApi
@@ -109,6 +121,8 @@ private fun SenderHome() {
     val lan by poll(3000) { Graph.remoteStatus.load("lan") }
     val drv by poll(3000) { Graph.remoteStatus.load("drive") }
     val driveAuth by poll(3000) { (Graph.meta.getLong("driveAuthProblem") ?: 0L) == 1L }
+    val driveUsed by poll(3000) { Graph.driveUsed() }
+    val scanPending by poll(3000) { (Graph.meta.getLong(com.pixelrelay.sender.SenderEngine.KEY_SCAN_PENDING) ?: 0L).toInt() }
     var msg by remember { mutableStateOf("") }
     var confirmVideo by remember { mutableStateOf(false) }
 
@@ -120,7 +134,7 @@ private fun SenderHome() {
         SenderScheduler.runNow(ctx, true)
         scope.launch {
             msg = try { "지금 보내기 요청(주력 폰 대기 파일 + 픽셀에 sendNow: ${Graph.senderCommands.send(RemoteCommand(RemoteCommand.SEND_NOW, expectShas = batchShas))})" }
-            catch (e: Exception) { "픽셀에 명령을 보내지 못했습니다: ${e.message}" }
+            catch (e: Exception) { "픽셀에 명령을 보내지 못했습니다: ${FailureText.korean(e, LocalNetworkPermission.granted(ctx))}" }
         }
     }
 
@@ -131,10 +145,14 @@ private fun SenderHome() {
         val warns = ArrayList<String>()
         if (!Graph.mediaSource.hasFullMediaAccess()) warns += "사진·영상 접근이 전체 허용이 아닙니다. 자동 감지가 멈춰 있습니다."
         if (!Graph.mediaSource.hasLocationAccess()) warns += "위치 정보(미디어 위치) 권한이 없어 파일 전송이 '권한필요'로 대기합니다."
-        if (driveAuth == true) warns += "구글 드라이브 연결이 필요합니다(집 밖 전송 중지)."
+        DriveUse.homeAuthWarning(driveUsed != false, driveAuth == true)?.let { warns += it }
         val latest = listOfNotNull(lan, drv).maxByOrNull { it.at }
-        latest?.status?.warnings?.forEach { warns += "픽셀: " + WarnCode.korean(it.code) }
+        latest?.status?.let { st -> DriveUse.visibleWarnings(st.warnings, driveUsed != false) }?.forEach { warns += "픽셀: " + WarnCode.korean(it.code) }
         if (warns.isNotEmpty()) Section("경고") { warns.forEach { Text("• $it", color = MaterialTheme.colorScheme.error) } }
+        DriveUse.skippedNote(driveUsed != false)?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+
+        val progress = SendProgress.of(entries.orEmpty(), scanPending ?: 0, driveUsed != false)
+        if (progress.lines().isNotEmpty()) Section("보내기 진행") { progress.lines().forEach { Text(it) } }
 
         Section("상태별 개수") {
             val c = entries.orEmpty().groupingBy { it.state }.eachCount()
@@ -198,7 +216,7 @@ private fun SenderFiles() {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(10.dp)) {
                         Text(e.name + if (e.trial) " [시험]" else "", style = MaterialTheme.typography.titleSmall)
-                        Text("${fmtBytes(e.size)} · ${stateLabel(e.state)}${e.reason?.let { " ($it)" } ?: ""}${if (e.attempts > 0) " · 시도 ${e.attempts}회" else ""}")
+                        Text("${fmtBytes(e.size)} · ${stateLabel(e.state)}${e.reason?.let { " (${FailureText.displayReason(it)})" } ?: ""}${if (e.attempts > 0) " · 시도 ${e.attempts}회" else ""}")
                         if (e.state == "VANISHED_UNKNOWN") {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(onClick = { confirmSha = e.sha }) { Text("포토 확인됨으로 확정") }
@@ -240,13 +258,13 @@ private fun SenderFiles() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SenderSettingsScreen(onOpenWizard: () -> Unit, onOpenTrial: () -> Unit) {
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val cur by poll(5000) { Graph.settings.sender() }
     var loaded by remember { mutableStateOf(false) }
-    var watch by remember { mutableStateOf("") }
-    var exclude by remember { mutableStateOf("") }
     var photoMobile by remember { mutableStateOf(true) }
     var videoMobile by remember { mutableStateOf(false) }
     var dailyMb by remember { mutableStateOf("2048") }
@@ -255,44 +273,104 @@ private fun SenderSettingsScreen(onOpenWizard: () -> Unit, onOpenTrial: () -> Un
     var resGb by remember { mutableStateOf("3") }
     var msg by remember { mutableStateOf("") }
 
+    // 폴더 체크 목록: 사진·영상이 있는 폴더를 MediaStore 에서 모아 파일 수와 함께 보여 준다
+    var folderRows by remember { mutableStateOf<List<FolderRow>>(emptyList()) }
+    var folderListed by remember { mutableStateOf(false) }
+    var checked by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // 기존 사진도 보내기
+    var backfill by remember { mutableStateOf(BackfillMode.NONE) }
+    var sinceSec by remember { mutableStateOf(0L) }
+    var dateDialog by remember { mutableStateOf<com.pixelrelay.core.DateDialogState?>(null) }
+
     LaunchedEffect(cur) {
         val c = cur
         if (c != null && !loaded) {
             loaded = true
-            watch = c.watchFolders.joinToString("\n"); exclude = c.excludeFolders.joinToString("\n")
             photoMobile = c.photoOverMobile; videoMobile = c.videoOverMobile; dailyMb = (c.dailyLimitBytes / (1024 * 1024)).toString()
+            backfill = c.backfillMode
+            // 기본 날짜(30일 전)도 기기 시간대의 그 날 자정으로 맞춘다(날짜 선택기·저장값과 같은 기준)
+            sinceSec = if (c.backfillMode == BackfillMode.SINCE) c.sendFromSec ?: 0L
+            else BackfillDates.startOfDaySec(BackfillDates.toPickerMs(System.currentTimeMillis() / 1000 - 30L * 86400))
+            val counts = try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Graph.mediaSource.folderCounts() }
+            } catch (e: Exception) { emptyMap() }
+            folderListed = counts.isNotEmpty()
+            val rows = FolderSelection.rows(counts, c.watchFolders, c.excludeFolders)
+            folderRows = rows
+            checked = rows.filter { it.checked }.map { it.path }.toSet()
         }
     }
 
     Column(Modifier.verticalScroll(rememberScrollState())) {
+        UpdateCard(isSender = true)
         Section("설정 도우미") {
             Text("권한·배터리·구글 계정·짝짓기를 단계별로 확인합니다.")
             OutlinedButton(onClick = onOpenWizard) { Text("설정 마법사 다시 열기") }
             OutlinedButton(onClick = onOpenTrial) { Text("무료 업로드 확인 시험") }
         }
-        Section("감시 폴더") {
-            OutlinedTextField(watch, { watch = it }, label = { Text("감시 폴더(한 줄에 하나)") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(exclude, { exclude = it }, label = { Text("제외 폴더(한 줄에 하나)") }, modifier = Modifier.fillMaxWidth())
+        Section("보낼 폴더") {
+            Text("체크한 폴더의 사진·영상을 보냅니다. 기본은 카메라 폴더(DCIM/Camera)입니다. 체크한 폴더 안의 하위 폴더도 함께 보내며, 체크하지 않은 하위 폴더는 뺍니다.")
+            if (!loaded) Text("불러오는 중...")
+            else if (folderRows.isEmpty()) Text("사진·영상이 있는 폴더를 찾지 못했습니다. 사진 읽기 권한을 확인하세요.")
+            folderRows.forEach { r ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Checkbox(checked = r.path in checked, onCheckedChange = { on -> checked = if (on) checked + r.path else checked - r.path })
+                    Text("${r.path}  (${r.count}개)", Modifier.weight(1f))
+                }
+            }
+        }
+        Section("기존 사진도 보내기") {
+            Text("기본은 이 앱을 쓰기 시작한 뒤 새로 찍은 것만 보냅니다. 폴더에 이미 있던 사진·영상도 보내려면 고르세요. 이미 보낸 파일은 다시 보내지 않고, 최근 것부터 보냅니다. 양이 많으면 시간이 오래 걸리고 픽셀 공간이 모자라면 기다렸다가 이어 보냅니다.")
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(backfill == BackfillMode.NONE, { backfill = BackfillMode.NONE }, { Text("안 보냄(새로 찍은 것만)") })
+                FilterChip(backfill == BackfillMode.ALL, { backfill = BackfillMode.ALL }, { Text("전부") })
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                FilterChip(backfill == BackfillMode.SINCE, { dateDialog = com.pixelrelay.core.DateDialogState.open(backfill); backfill = BackfillMode.SINCE }, { Text("이 날짜 이후") })
+                if (backfill == BackfillMode.SINCE) OutlinedButton(onClick = { dateDialog = com.pixelrelay.core.DateDialogState.open(backfill) }) { Text(BackfillDates.label(sinceSec)) }
+            }
+            if (backfill == BackfillMode.ALL) {
+                val n = folderRows.filter { it.path in checked }.sumOf { it.count }
+                Text("지금 체크한 폴더에는 사진·영상이 ${n}개 있습니다.")
+            }
         }
         Section("모바일 데이터") {
             Row { Text("사진도 모바일 데이터로 올리기", Modifier.weight(1f)); Switch(photoMobile, { photoMobile = it }) }
             Row { Text("영상도 모바일 데이터로 올리기", Modifier.weight(1f)); Switch(videoMobile, { videoMobile = it }) }
             OutlinedTextField(dailyMb, { dailyMb = it.filter(Char::isDigit) }, label = { Text("하루 데이터 한도(MB)") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
-            Button(onClick = {
-                scope.launch {
-                    val base = Graph.settings.sender()
-                    Graph.settings.saveSender(
-                        base.copy(
-                            watchFolders = watch.split('\n').map { it.trim() }.filter { it.isNotEmpty() },
-                            excludeFolders = exclude.split('\n').map { it.trim() }.filter { it.isNotEmpty() },
-                            photoOverMobile = photoMobile, videoOverMobile = videoMobile,
-                            dailyLimitBytes = (dailyMb.toLongOrNull() ?: 2048L) * 1024 * 1024,
-                        ),
-                    )
-                    msg = "저장했습니다"
-                }
-            }) { Text("저장") }
+        }
+        Button(onClick = {
+            scope.launch {
+                val base = Graph.settings.sender()
+                // 폴더 목록을 못 불러왔으면 기존 폴더 규칙을 그대로 둔다
+                val (watch, exclude) =
+                    if (folderListed) FolderSelection.toRules(folderRows.map { it.path }, checked, base.excludeFolders, base.watchFolders) else base.watchFolders to base.excludeFolders
+                Graph.settings.saveSender(
+                    base.copy(
+                        watchFolders = watch, excludeFolders = exclude,
+                        photoOverMobile = photoMobile, videoOverMobile = videoMobile,
+                        dailyLimitBytes = (dailyMb.toLongOrNull() ?: 2048L) * 1024 * 1024,
+                    ),
+                )
+                Graph.settings.setSendFrom(SenderSettings.sendFromFor(backfill, sinceSec))
+                SenderScheduler.runNow(ctx, false)   // 새 기준으로 바로 한 번 훑는다
+                msg = "저장했습니다"
+            }
+        }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) { Text("저장") }
+        dateDialog?.let { dlg ->
+            val st = rememberDatePickerState(initialSelectedDateMillis = BackfillDates.toPickerMs(sinceSec))
+            DatePickerDialog(
+                onDismissRequest = { backfill = dlg.cancel(); dateDialog = null },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val ms = st.selectedDateMillis
+                        if (ms != null) { sinceSec = BackfillDates.startOfDaySec(ms); backfill = dlg.confirm() } else backfill = dlg.cancel()
+                        dateDialog = null
+                    }) { Text("확인") }
+                },
+                dismissButton = { TextButton(onClick = { backfill = dlg.cancel(); dateDialog = null }) { Text("취소") } },
+            ) { DatePicker(state = st) }
         }
         Section("픽셀 받기 방식(픽셀에 적용)") {
             Row { FilterChip(mode == QueueMode.IMMEDIATE, { mode = QueueMode.IMMEDIATE }, { Text("바로") }); Text("  "); FilterChip(mode == QueueMode.CAPACITY, { mode = QueueMode.CAPACITY }, { Text("용량") }) }
@@ -335,7 +413,7 @@ private fun SenderConnect() {
                         val key = PixelPairing.pair(HttpPixelApi.defaultClient(), h, com.pixelrelay.core.Proto.PORT, code, android.os.Build.MODEL)
                         Graph.settings.savePairing(h, key)
                         "짝짓기 성공($h)"
-                    } catch (e: Exception) { "짝짓기 실패: ${e.message}" }
+                    } catch (e: Exception) { "짝짓기 실패: ${FailureText.pairing(e, LocalNetworkPermission.granted(ctx))}" }
                 }
             }) { Text("짝짓기") }
             if (msg.isNotEmpty()) Text(msg)
@@ -348,6 +426,6 @@ private fun SenderConnect() {
             if (PermLists.notifications().isNotEmpty()) PermissionRow("알림", PermLists.notifications())
             if (localNet) PermissionRow("로컬 네트워크(Android 16+)", listOf(LocalNetworkPermission.NAME))
         }
-        AccountSection()
+        AccountSection(allowSkip = true)
     }
 }

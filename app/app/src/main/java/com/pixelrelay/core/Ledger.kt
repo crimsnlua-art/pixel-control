@@ -138,10 +138,21 @@ class SenderLedger(private val db: AppDb, private val clock: Clock) {
     /** 자동으로 보낼 대상: 아직 도착하지 않은 것만. */
     suspend fun sendable(): List<SendEntry> = dao.sendable(clock.nowMs())
 
+    /** 아직 끝나지 않은 항목 전부(재시도 대기 시각 무관). */
+    suspend fun unfinished(): List<SendEntry> = dao.unfinished()
+
     /** 해시 전 자리표시(권한필요) 항목 제거. */
     suspend fun remove(sha: String) = dao.delete(sha)
 
     suspend fun seen(mediaId: Long): SeenMedia? = dao.seen(mediaId)
+
+    /** 시간 초과로 해시가 끊긴 큰 파일 표시(파일 크기·수정 시각이 같을 때만 유효). 짧은 스캔은 건너뛰고 한가한 실행이 처리한다. */
+    suspend fun isHashDeferred(mediaId: Long, size: Long, mod: Long): Boolean =
+        db.recv().meta("hashDefer:$mediaId")?.v == "$size:$mod"
+
+    suspend fun markHashDeferred(mediaId: Long, size: Long, mod: Long) = db.recv().putMeta(Meta("hashDefer:$mediaId", "$size:$mod"))
+
+    suspend fun clearHashDeferred(mediaId: Long) = db.recv().putMeta(Meta("hashDefer:$mediaId", ""))
     suspend fun putSeen(s: SeenMedia) = dao.upsertSeen(s)
     suspend fun forgetSeen(mediaId: Long) = dao.deleteSeen(mediaId)
 }

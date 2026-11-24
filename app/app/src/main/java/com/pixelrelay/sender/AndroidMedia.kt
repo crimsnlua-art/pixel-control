@@ -30,11 +30,12 @@ class MediaStoreSource(private val ctx: Context) : MediaSource {
         if (Build.VERSION.SDK_INT >= 29) granted(Manifest.permission.ACCESS_MEDIA_LOCATION) else true
 
     override fun list(addedSinceSec: Long): List<MediaItem> = query(
-        "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (?,?) AND ${MediaStore.Files.FileColumns.DATE_ADDED} >= ?",
+        "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (?,?) AND (${MediaStore.Files.FileColumns.DATE_ADDED} >= ? OR ${MediaStore.MediaColumns.DATE_TAKEN} >= ?)",
         arrayOf(
             MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
             MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString(),
             addedSinceSec.toString(),
+            (addedSinceSec * 1000).toString(),   // 촬영 날짜 기준 "이 날짜 이후"도 잡는다
         ),
     )
 

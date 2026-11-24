@@ -165,6 +165,7 @@ private fun ReceiverSettingsScreen() {
         if (c != null && !loaded) { loaded = true; mode = c.queueMode; thr = (c.thresholdBytes / GB).toString(); res = (c.reserveBytes / GB).toString() }
     }
     Column(Modifier.verticalScroll(rememberScrollState())) {
+        UpdateCard(isSender = false)
         Section("드라이브에서 받는 때") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(mode == QueueMode.IMMEDIATE, { mode = QueueMode.IMMEDIATE }, { Text("바로(2분마다)") })

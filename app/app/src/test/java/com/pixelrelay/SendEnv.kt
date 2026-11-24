@@ -37,6 +37,8 @@ import java.time.ZoneOffset
 /** 프로세스 안에서 받기 핵심(ReceiverCore)에 직접 붙는 픽셀 대역. 네트워크 끊김도 흉내낸다. */
 class CoreBackedPixelApi(private val recv: RecvEnv) : PixelApi {
     var down = false
+    var beginCalls = 0
+    val beginShas = ArrayList<String>()
     var failPutAfterCalls = -1
     private var putCalls = 0
     val commands = ArrayList<RemoteCommand>()
@@ -49,6 +51,8 @@ class CoreBackedPixelApi(private val recv: RecvEnv) : PixelApi {
     }
 
     override suspend fun begin(sha: String, name: String, size: Long, takenAt: Long, mime: String): ApiBegin {
+        beginCalls++
+        beginShas += sha
         check()
         return when (val r = recv.core.begin(sha, name, size, takenAt, mime, "lan")) {
             is BeginResult.Ok -> ApiBegin.Ok(r.resume, r.offset)
@@ -96,16 +100,20 @@ class CoreBackedPixelApi(private val recv: RecvEnv) : PixelApi {
 }
 
 /** 보내기 쪽 시험 환경. */
-class SendEnv(val db: AppDb = TestDb.memory(), val clock: FakeClock = FakeClock(), chunk: Int = 4096) {
+class SendEnv(
+    val db: AppDb = TestDb.memory(), val clock: FakeClock = FakeClock(), chunk: Int = 4096,
+    maxHash: Int = MediaScanner.DEFAULT_MAX_HASH, hashBudgetMs: Long = MediaScanner.DEFAULT_HASH_BUDGET_MS,
+    val source: FakeMediaSource = FakeMediaSource(clock),
+) {
+    var driveOn = true
     val ledger = SenderLedger(db, clock)
     val meta = MetaStore(db)
-    val source = FakeMediaSource(clock)
     val net = FakeNetwork()
     val drive = FakeDriveApi()
     var settings = SenderSettings()
     var lanApi: PixelApi? = null
     val lan = object : LanConnector { override suspend fun connect(): PixelApi? = lanApi }
-    val scanner = MediaScanner(source, ledger, clock) { settings }
+    val scanner = MediaScanner(source, ledger, clock, hashBudgetMs, maxHash) { settings }
     val sync = LedgerSync(ledger, meta)
     val statusStore = RemoteStatusStore(meta, clock)
     val usage = DailyUsage(meta, clock, ZoneOffset.UTC)
@@ -114,7 +122,8 @@ class SendEnv(val db: AppDb = TestDb.memory(), val clock: FakeClock = FakeClock(
         scanner, source, ledger, meta, clock, net, drive, lan,
         LanSender(source, ledger, clock, chunk), DriveSender(source, ledger, drive, clock, chunk),
         { settings }, usage, registrar, sync, statusStore,
-        commands = SenderCommands(lan, drive, net),
+        commands = SenderCommands(lan, drive, net) { driveOn },
+        driveEnabled = { driveOn },
     )
 
     /** 60초 안정 조건을 채워 장부에 등록시킨다. */

@@ -47,7 +47,7 @@ object WizardSteps {
     )
 
     private fun sender() = listOf(
-        WizardStep(WizardIds.PERMISSIONS, "권한", "사진·영상 '전체 허용', 사진 위치 정보, 알림 권한을 허용하세요.", StepKind.AUTO),
+        WizardStep(WizardIds.PERMISSIONS, "권한", "사진·영상 '전체 허용', 사진 위치 정보, 알림, 로컬 네트워크(Android 16+ 기기) 권한을 허용하세요.", StepKind.AUTO),
         WizardStep(WizardIds.BATTERY, "배터리 최적화 제외", "백그라운드 전송이 끊기지 않도록 이 앱을 배터리 최적화에서 제외하세요.", StepKind.AUTO, Shortcut.BATTERY_OPT,
             "설정 > 앱 > 픽셀중계 > 배터리 > 제한 없음(또는 최적화 안 함)으로 바꿔 주세요. 삼성은 '절전 예외 앱'에도 추가하세요."),
         WizardStep(WizardIds.PHOTOS_OFF, "이 폰의 구글 포토 백업 끄기",

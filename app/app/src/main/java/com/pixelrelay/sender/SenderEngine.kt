@@ -1,6 +1,7 @@
 package com.pixelrelay.sender
 
 import com.pixelrelay.core.Clock
+import com.pixelrelay.core.DriveUse
 import com.pixelrelay.core.LedgerItem
 import com.pixelrelay.core.MetaStore
 import com.pixelrelay.core.NetworkState
@@ -69,6 +70,8 @@ class SenderEngine(
     private val commands: SenderCommands? = null,
     /** 무료 확인 시험을 한 걸음 진행시키는 훅(없으면 안 함) */
     private val trialStep: (suspend () -> Unit)? = null,
+    /** 구글 드라이브를 쓰는가(연결 안 함을 고르면 false: 드라이브 경로·드라이브 경고를 쓰지 않는다) */
+    private val driveEnabled: suspend () -> Boolean = { true },
 ) {
     companion object {
         /** 프로세스 전역: 전송 엔진 실행은 한 번에 하나(§15). 여러 워커가 같은 장부를 동시에 처리하지 않는다. */
@@ -76,6 +79,10 @@ class SenderEngine(
         const val KEY_DRIVE_AUTH = "driveAuthProblem"
         const val KEY_DRIVE_STATUS_AT = "driveStatusAt"
         const val KEY_NOTIFIED = "notifiedWarnings"
+        /** 해시 예산 때문에 아직 못 본 기존 파일 수(홈 화면 진행 표시용) */
+        const val KEY_SCAN_PENDING = "scanPendingHash"
+        /** 픽셀 공간 부족 거절 뒤 이 시간 뒤에 다시 시도 */
+        const val PIXEL_SPACE_RETRY_MS = 10 * 60_000L
         const val DRIVE_STATUS_EVERY_MS = 5 * 60_000L
         const val RESEND_RETRY_MS = 5 * 60_000L
     }
@@ -87,6 +94,19 @@ class SenderEngine(
         val deadline = clock.nowMs() + budgetMs
         usage.releaseStale()   // 이전 실행이 끊겨 정산 못 한 예약을 해제(엔진은 한 번에 하나라 지금은 진행 중인 예약이 없다)
         val scan = scanner.scan()
+        meta.putLong(KEY_SCAN_PENDING, scan.pendingHash.toLong())
+        val driveOn = driveEnabled()
+        if (!driveOn) {
+            // 드라이브 연결 안 함으로 바뀐 경우: 끝나지 않은 드라이브 업로드는 세션을 버리고 대기로 되돌려 LAN 으로 보낸다.
+            // 이미 IN_DRIVE 인 항목은 중복 전송을 막으려고 그대로 두고 홈에 사유를 보여 준다.
+            for (u in ledger.unfinished()) {
+                if (u.stateEnum == SendState.UPLOADING_DRIVE) {
+                    ledger.tryTransition(u.sha, SendState.WAITING, Reason.NETWORK) {
+                        it.copy(driveSessionUri = null, driveOffset = 0, route = null, nextAttemptAt = 0)
+                    }
+                }
+            }
+        }
         val net = network.snapshot()
 
         // LAN: 비과금 와이파이 + 서명된 /status 성공
@@ -98,7 +118,7 @@ class SenderEngine(
             try {
                 val st = api.status()
                 statusStore.save(st, "lan")
-                handleWarnings(st)
+                handleWarnings(st, driveOn)
                 sync.syncViaLan(api)
             } catch (e: Exception) {
                 api = null
@@ -111,7 +131,7 @@ class SenderEngine(
         val lanWasOk = lanOk
 
         // 드라이브 쪽 상태 보고(5분에 한 번 이하)
-        if (net.connected) syncDriveStatusIfDue()
+        if (net.connected && driveOn) syncDriveStatusIfDue()
 
         // 전송
         val settingsNow = settings()
@@ -122,11 +142,14 @@ class SenderEngine(
         var driveBlocked = false
         var sent = 0
         var more = false
+        if (scan.pendingHash > scan.deferredLarge) more = true   // 기존 파일 해시가 남았으면 바로 다음 워커로 이어 한다
+        // 픽셀이 공간 부족으로 거절한 가장 작은 크기: 이번 회차에는 이보다 큰 파일을 LAN 으로 시도하지 않는다
+        var pixelFullAt = Long.MAX_VALUE
 
         for (e in entries) {
             if (clock.nowMs() > deadline) { more = true; break }
 
-            if (!driveInfoTried && !lanOk && net.connected) {
+            if (!driveInfoTried && !lanOk && net.connected && driveOn) {
                 driveInfoTried = true
                 try {
                     driveQueue = drive.listQueue().sumOf { it.size }
@@ -157,13 +180,16 @@ class SenderEngine(
                         if (route.registerDrain) autoDrain()
                     }
                     Route.Lan -> {
+                        if (e.size >= pixelFullAt) { ledger.wait(e.sha, Reason.PIXEL_SPACE, PIXEL_SPACE_RETRY_MS); continue }
                         if (recheck(e)) continue
                         val r = lanSender.send(e, api!!, deadline)
+                        if (r is SendResult.NoSpace && !r.permanent) pixelFullAt = minOf(pixelFullAt, e.size)
                         if (handleLan(e, r)) sent++
                         if (r is SendResult.Partial) more = true
                         if (r is SendResult.Network) { api = null; lanOk = false }
                     }
                     Route.Drive -> {
+                        if (!driveOn) continue   // 드라이브 연결 안 함: 집 와이파이(LAN)에서만 보낸다
                         if (driveBlocked) { ledger.wait(e.sha, Reason.PERMISSION); continue }
                         if (recheck(e)) continue
                         // 하루 사용량: 보내기 전에 별도 예약으로 잡고, 끝나면(취소돼도) 실제 바이트로 정산(§15)
@@ -184,7 +210,16 @@ class SenderEngine(
             } catch (ex: kotlinx.coroutines.CancellationException) {
                 throw ex
             } catch (ex: Exception) {
-                ledger.recordFailure(e.sha, "예외: ${ex.message}")
+                ledger.recordFailure(e.sha, "예외: ${FailureText.korean(ex)}")
+            }
+        }
+        // 한가한 실행(보낸 것도 남은 일도 없음)이면 미뤄 둔 큰 파일을 끝까지 해시한다. 등록되면 바로 다음 워커가 보낸다.
+        if (scan.deferredLarge > 0 && !more) {
+            if (sent == 0) {
+                val r = scanner.scan(allowLong = true, deadlineMs = deadline)
+                if (r.registered > 0) more = true
+            } else {
+                more = true   // 이번에 보냈으면(진행 있음) 다음 실행은 한가할 것이므로 이어서 끝까지 해시
             }
         }
         try { trialStep?.invoke() } catch (ex: kotlinx.coroutines.CancellationException) { throw ex } catch (ex: Exception) { /* 시험은 전송을 막지 않는다 */ }
@@ -198,7 +233,7 @@ class SenderEngine(
             is SendResult.Network -> ledger.wait(e.sha, Reason.NETWORK, 30_000)
             is SendResult.NoSpace ->
                 if (r.permanent) ledger.tryTransition(e.sha, SendState.SKIPPED, Reason.TOO_LARGE)
-                else ledger.wait(e.sha, Reason.PIXEL_SPACE, 10 * 60_000L)
+                else ledger.wait(e.sha, Reason.PIXEL_SPACE, PIXEL_SPACE_RETRY_MS)
             SendResult.Busy -> ledger.wait(e.sha, Reason.NETWORK, 60_000)
             SendResult.ResendNotYet -> ledger.tryTransition(e.sha, SendState.RESEND_PENDING) { it.copy(nextAttemptAt = 0) }
             SendResult.Hot -> ledger.wait(e.sha, Reason.NETWORK, 5 * 60_000L)
@@ -306,7 +341,7 @@ class SenderEngine(
                 sync.applyChanges(items)
             }
             sync.noteRemoteSeq(st.seq)
-            handleWarnings(st)
+            handleWarnings(st, driveEnabled())
             meta.putLong(KEY_DRIVE_AUTH, 0)
         } catch (e: DriveAuthException) {
             meta.putLong(KEY_DRIVE_AUTH, 1)
@@ -317,11 +352,12 @@ class SenderEngine(
     }
 
     /** 새 경고(코드+시작 시각)만 알림으로 띄운다. */
-    private suspend fun handleWarnings(st: PixelStatus) {
+    private suspend fun handleWarnings(st: PixelStatus, driveOn: Boolean = true) {
+        val warnings = DriveUse.visibleWarnings(st.warnings, driveOn)
         val seen = (meta.getString(KEY_NOTIFIED) ?: "").split('|').filter { it.isNotEmpty() }.toMutableSet()
         var changed = false
-        val current = st.warnings.map { "${it.code}@${it.since}" }.toSet()
-        for (w in st.warnings) {
+        val current = warnings.map { "${it.code}@${it.since}" }.toSet()
+        for (w in warnings) {
             val k = "${w.code}@${w.since}"
             if (seen.add(k)) { notifier.pixelWarning(w.code, w.since); changed = true }
         }
@@ -336,6 +372,8 @@ class SenderCommands(
     private val lan: LanConnector,
     private val drive: DriveApi,
     private val network: NetworkState,
+    /** 구글 드라이브를 쓰는가. 안 쓰면 LAN 이 안 될 때 드라이브 명령 파일로 돌리지 않고 실패로 알린다. */
+    private val driveEnabled: suspend () -> Boolean = { true },
 ) {
     suspend fun send(cmd0: RemoteCommand): String {
         // 모든 명령에 commandId 를 붙인다(파괴적 명령은 픽셀이 한 번만 처리)
@@ -347,6 +385,7 @@ class SenderCommands(
                 try { if (api.command(cmd)) return "LAN" } catch (e: Exception) { /* 드라이브로 */ }
             }
         }
+        if (!driveEnabled()) throw IllegalStateException("구글 드라이브 연결 안 함: 집 와이파이에서 픽셀에 연결될 때만 명령을 보낼 수 있습니다")
         drive.createCommand(cmd.id!!, cmd.toJson().toString())
         return "드라이브"
     }

@@ -63,8 +63,10 @@ class ReceiverService : Service() {
 /** 부팅하면(잠금 없이) 받기 역할일 때 서비스를 다시 시작한다. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        // 부팅 또는 앱 업데이트(MY_PACKAGE_REPLACED) 뒤: 받기 역할이면 서비스를, 보내기 역할이면 전송 작업을 다시 건다
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val role = runBlocking { SettingsStore(context).role() }
         if (role == SettingsStore.ROLE_RECEIVER) ReceiverService.start(context)
+        else if (role == SettingsStore.ROLE_SENDER && intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) com.pixelrelay.sender.SenderScheduler.ensure(context)
     }
 }

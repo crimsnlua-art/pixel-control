@@ -134,7 +134,7 @@ interface SendDao {
     @Query("SELECT * FROM send_entry")
     suspend fun all(): List<SendEntry>
 
-    @Query("SELECT * FROM send_entry WHERE state IN ('WAITING','SENDING_LAN','UPLOADING_DRIVE') AND nextAttemptAt <= :now ORDER BY takenAt ASC")
+    @Query("SELECT * FROM send_entry WHERE state IN ('WAITING','SENDING_LAN','UPLOADING_DRIVE') AND nextAttemptAt <= :now ORDER BY takenAt DESC")
     suspend fun sendable(now: Long): List<SendEntry>
 
     @Query("SELECT * FROM send_entry WHERE state IN ('WAITING','SENDING_LAN','UPLOADING_DRIVE')")

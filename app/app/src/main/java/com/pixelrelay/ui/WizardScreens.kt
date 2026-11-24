@@ -71,8 +71,10 @@ object WizardAutoChecks {
     private fun granted(ctx: Context, perms: List<String>) =
         perms.all { ContextCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED }
 
-    fun senderPermissions(): List<String> =
-        PermLists.media() + Manifest.permission.ACCESS_MEDIA_LOCATION + PermLists.notifications()
+    /** 기기에 로컬 네트워크 권한(Android 16+)이 있으면 필수에 넣는다: 없으면 LAN 짝짓기·전송이 막힌다. */
+    fun senderPermissions(ctx: Context): List<String> =
+        PermLists.media() + Manifest.permission.ACCESS_MEDIA_LOCATION + PermLists.notifications() +
+            (if (LocalNetworkPermission.definedOnDevice(ctx)) listOf(LocalNetworkPermission.NAME) else emptyList())
 
     fun receiverPermissions(): List<String> =
         listOf(Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE) + PermLists.notifications()
@@ -83,9 +85,11 @@ object WizardAutoChecks {
         for (s in steps) {
             if (s.kind != StepKind.AUTO) continue
             out[s.id] = when (s.id) {
-                WizardIds.PERMISSIONS -> granted(ctx, if (role == SettingsStore.ROLE_RECEIVER) receiverPermissions() else senderPermissions())
+                WizardIds.PERMISSIONS -> granted(ctx, if (role == SettingsStore.ROLE_RECEIVER) receiverPermissions() else senderPermissions(ctx))
                 WizardIds.BATTERY -> pm.isIgnoringBatteryOptimizations(ctx.packageName)
-                WizardIds.GOOGLE -> (Graph.meta.getLong("googleLinked") ?: 0L) == 1L && (Graph.meta.getLong("driveAuthProblem") ?: 0L) != 1L
+                WizardIds.GOOGLE ->
+                    ((Graph.meta.getLong("googleLinked") ?: 0L) == 1L && (Graph.meta.getLong("driveAuthProblem") ?: 0L) != 1L) ||
+                        (role == SettingsStore.ROLE_SENDER && (Graph.meta.getLong(com.pixelrelay.core.DriveUse.KEY_SKIPPED) ?: 0L) == 1L)
                 WizardIds.PAIRING ->
                     if (role == SettingsStore.ROLE_RECEIVER) Graph.settings.receiverKeys().isNotEmpty() else Graph.settings.pairing() != null
                 else -> false
@@ -129,9 +133,10 @@ fun SetupWizard(role: String, onClose: () -> Unit) {
                             } else {
                                 PermissionRow("사진·영상 읽기", PermLists.media())
                                 PermissionRow("사진 위치 정보(원본 GPS)", listOf(Manifest.permission.ACCESS_MEDIA_LOCATION))
+                                if (LocalNetworkPermission.definedOnDevice(ctx)) PermissionRow("로컬 네트워크(Android 16+, 픽셀 연결에 필요)", listOf(LocalNetworkPermission.NAME))
                                 if (PermLists.notifications().isNotEmpty()) PermissionRow("알림", PermLists.notifications())
                             }
-                        WizardIds.GOOGLE -> AccountSection()
+                        WizardIds.GOOGLE -> AccountSection(allowSkip = role == SettingsStore.ROLE_SENDER)
                         WizardIds.PHOTOS_BACKUP -> OutlinedButton(onClick = {
                             scope.launch {
                                 info = runCatching { ReadyFolder.prepareAndScan(ctx); "Pictures/PixelRelay 폴더와 안내 이미지를 준비했습니다." }
@@ -158,6 +163,14 @@ fun SetupWizard(role: String, onClose: () -> Unit) {
             }
         }
         if (info.isNotEmpty()) Text(info)
+        if (role == SettingsStore.ROLE_SENDER) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("기존 사진도 보내고 싶다면", style = MaterialTheme.typography.titleMedium)
+                    Text("기본은 새로 찍은 사진·영상만 보냅니다. 폴더에 이미 있는 사진도 보내려면 '설정' 탭의 '기존 사진도 보내기'에서 전부 또는 날짜를 고르세요. 보낼 폴더도 같은 화면에서 체크로 고릅니다.")
+                }
+            }
+        }
         Button(onClick = {
             scope.launch { Graph.settings.setWizardSeen(role); onClose() }
         }) { Text(if (progress.allDone(steps)) "마치기" else "나중에 하기(설정에서 다시 열 수 있어요)") }
