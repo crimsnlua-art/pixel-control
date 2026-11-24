@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 집 LAN 안의 픽셀 서버는 고정 도메인이 없어 평문 HTTP 를 허용한다(설계서 2절, 위험 수용). 드라이브는 HTTPS. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
