@@ -17,6 +17,12 @@ object DriveUse {
     /** 연결 안 함 상태의 회색 안내 한 줄. */
     fun skippedNote(driveUsed: Boolean): String? =
         if (driveUsed) null else "구글 드라이브 연결 안 함: 집 와이파이에서만 보냅니다."
+
+    /** "연결 안 함" 선택: 남아 있던 인증 문제 표시도 함께 지운다(안 지우면 연결 안 함인데도 옛 경고가 남을 수 있다). */
+    suspend fun setSkipped(meta: MetaStore, skipped: Boolean) {
+        meta.putLong(KEY_SKIPPED, if (skipped) 1 else 0)
+        if (skipped) meta.putLong("driveAuthProblem", 0)
+    }
 }
 
 /** 홈 화면의 보내기 진행 요약(순수 계산). */

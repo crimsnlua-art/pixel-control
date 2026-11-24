@@ -51,6 +51,7 @@ object Shortcuts {
             )
             Shortcut.LOCK_SCREEN -> startFirst(ctx, Intent(Settings.ACTION_SECURITY_SETTINGS))
             Shortcut.STORAGE_SETTINGS -> startFirst(ctx, Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS))
+            Shortcut.ACCESSIBILITY -> startFirst(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             Shortcut.OPEN_PHOTOS -> {
                 val i = ctx.packageManager.getLaunchIntentForPackage("com.google.android.apps.photos")
                 if (i == null) false else { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); true }
@@ -87,6 +88,7 @@ object WizardAutoChecks {
             out[s.id] = when (s.id) {
                 WizardIds.PERMISSIONS -> granted(ctx, if (role == SettingsStore.ROLE_RECEIVER) receiverPermissions() else senderPermissions(ctx))
                 WizardIds.BATTERY -> pm.isIgnoringBatteryOptimizations(ctx.packageName)
+                WizardIds.ACCESSIBILITY -> com.pixelrelay.receiver.AndroidCleanupDevice.isAccessibilityOn(ctx)
                 WizardIds.GOOGLE ->
                     ((Graph.meta.getLong("googleLinked") ?: 0L) == 1L && (Graph.meta.getLong("driveAuthProblem") ?: 0L) != 1L) ||
                         (role == SettingsStore.ROLE_SENDER && (Graph.meta.getLong(com.pixelrelay.core.DriveUse.KEY_SKIPPED) ?: 0L) == 1L)
@@ -182,4 +184,27 @@ private fun shortcutLabel(s: Shortcut) = when (s) {
     Shortcut.LOCK_SCREEN -> "보안/화면 잠금 설정 열기"
     Shortcut.STORAGE_SETTINGS -> "저장용량 설정 열기"
     Shortcut.OPEN_PHOTOS -> "구글 포토 열기"
+    Shortcut.ACCESSIBILITY -> "접근성 설정 열기"
+}
+
+/** 구글 포토의 공간 확보 화면 직접 링크(실기기 포토 8.0 에서 확인: HomeDeepLinkActivity 가 받아 공간 확보 화면을 띄운다). */
+object PhotosLink {
+    const val FREE_UP_URL = "https://photos.google.com/link/freeupspace"
+    const val PHOTOS_PACKAGE = "com.google.android.apps.photos"
+
+    /** 시험 가능한 인텐트 만들기. */
+    fun freeUpIntent(): Intent =
+        Intent(Intent.ACTION_VIEW, Uri.parse(FREE_UP_URL)).setPackage(PHOTOS_PACKAGE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /** 직접 링크로 열고, 받는 화면이 없으면(ActivityNotFound) 기존 런처 인텐트로 돌아간다. */
+    fun openFreeUp(ctx: Context): com.pixelrelay.core.PhotosOpen {
+        try {
+            ctx.startActivity(freeUpIntent())
+            return com.pixelrelay.core.PhotosOpen.LINK
+        } catch (e: android.content.ActivityNotFoundException) {
+            // 링크를 받을 곳이 없음: 일반 실행 화면으로
+        } catch (e: SecurityException) {
+        }
+        return if (Shortcuts.open(ctx, Shortcut.OPEN_PHOTOS)) com.pixelrelay.core.PhotosOpen.LAUNCHER else com.pixelrelay.core.PhotosOpen.FAILED
+    }
 }

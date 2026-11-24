@@ -113,7 +113,7 @@ class UpdateTest {
     @Test
     fun `포토 신호 없음 경고는 확인할 곳까지 알려 준다`() {
         val t = WarnCode.korean(WarnCode.PHOTOS_STALLED)
-        assertTrue(t, t.contains("6시간") && t.contains("구글 포토 로그인"))
+        assertTrue(t, t.contains("6시간") && t.contains("기기 폴더 백업") && t.contains("PixelRelay") && t.contains("공간 확보"))
     }
 
     @Test

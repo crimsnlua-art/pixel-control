@@ -37,7 +37,17 @@ class PhotosConfirmer(
             val path = e.path
             val present = path != null && sink.exists(path) &&
                 (sink.mediaStoreId(path) != null || (e.mediaId != null && sink.mediaStoreHas(e.mediaId)))
-            ledger.patch(e.sha) { it.copy(candidateAt = if (present) now else null) }
+            // 이미 유효한(1시간 창 안) 후보는 지우지 않는다: 직전 정리가 진행 중이거나 check() 대조가 안 끝난 항목이
+            // 겹친 실행 때문에 후보를 잃으면 정상 삭제가 원인 불명이 된다. 사라지는 중(missingSince)인 항목은 후보 시각도 그대로 둔다.
+            // 사라지는 중(missingSince)인 항목은 1분 재확인이 끝날 때까지 후보를 그대로 둔다. 유효성은 지금 시각이 아니라
+            // (사라진 시각 - 후보 시각)이 1시간 안인지로 check() 가 판단한다. 아직 안 사라진 항목의 옛 후보는 지금 기준 1시간 창 안일 때만 남긴다.
+            val oldCand = e.candidateAt?.takeIf { now - it in 0..BUTTON_WINDOW_MS }
+            val next = when {
+                e.missingSince != null -> e.candidateAt
+                present -> now
+                else -> oldCand
+            }
+            if (next != e.candidateAt) ledger.patch(e.sha) { it.copy(candidateAt = next) }
         }
     }
 

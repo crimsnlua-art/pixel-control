@@ -66,6 +66,23 @@ object Notifs {
             .build()
     }
 
+    const val ID_CLEANUP = 1003
+
+    /** "공간 확보 필요 — 누르면 실행": 누르면 투명 화면이 열려 포토 공간 확보를 시작한다(사람이 누른 것이라 안드로이드 10 의 백그라운드 시작 제한을 받지 않는다). */
+    fun postCleanupNeeded(ctx: Context) {
+        ensureChannels(ctx)
+        if (Build_SDK_33() && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val pi = PendingIntent.getActivity(
+            ctx, 1, Intent(ctx, com.pixelrelay.receiver.CleanupTrampolineActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val n = NotificationCompat.Builder(ctx, CH_WARN)
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentTitle(com.pixelrelay.core.CleanupText.NOTIFY_TITLE).setContentText(com.pixelrelay.core.CleanupText.NOTIFY_TEXT)
+            .setContentIntent(pi).setAutoCancel(true).build()
+        runCatching { NotificationManagerCompat.from(ctx).notify(ID_CLEANUP, n) }
+    }
+
     fun post(ctx: Context, id: Int, title: String, text: String) {
         ensureChannels(ctx)
         if (Build_SDK_33() && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return

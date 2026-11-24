@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">픽셀중계</string>
+    <string name="cleanup_service_description">구글 포토의 공간 확보 화면에서, 픽셀중계가 시작한 경우에만 \'여유 공간 … 확보\' 버튼 하나를 눌러 줍니다. 다른 앱과 다른 버튼은 건드리지 않습니다.</string>
 </resources>

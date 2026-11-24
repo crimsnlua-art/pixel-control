@@ -56,7 +56,7 @@ object WarnCode {
     const val DRIVE_AUTH = "DRIVE_AUTH"
 
     fun korean(code: String): String = when (code) {
-        PHOTOS_STALLED -> "포토 백업 신호가 6시간 넘게 없음 — 픽셀의 구글 포토 로그인이 풀렸는지 확인하세요"
+        PHOTOS_STALLED -> "픽셀에 정리 안 된 사진이 6시간 넘게 쌓여 있음 — 포토의 '기기 폴더 백업'에서 PixelRelay가 켜져 있는지 확인하고, 백업이 끝났으면 공간 확보를 하세요"
         LOW_SPACE -> "픽셀 저장 공간 부족(4GB 미만)"
         HIGH_TEMP -> "픽셀 온도 높음(40도 초과), 받기 중지"
         UNPLUG_SUGGESTED -> "충전기를 뽑는 것을 권장(80% 이상)"
@@ -88,6 +88,13 @@ data class PixelStatus(
     val trialDoneAt: Long = 0,
     /** 마지막으로 "포토 공간 확보 열기"를 누른 시각(픽셀 시계, 0 = 없음) */
     val cleanupOpenedAt: Long = 0,
+    /** 마지막 자동 공간 확보 결과 코드(CleanupResult, 빈 문자열 = 아직 없음)와 시각(픽셀 시계) */
+    val cleanupResult: String = "",
+    val cleanupResultAt: Long = 0,
+    /** 픽셀의 접근성 서비스(자동 공간 확보)가 켜져 있는가. 옛 버전 픽셀이 안 보내면 true 로 본다(거짓 경고 방지). */
+    val accessibilityOn: Boolean = true,
+    /** 마지막 포토 열기 방법(LINK/LAUNCHER/FAILED, 빈 문자열 = 기록 없음) */
+    val cleanupOpenVia: String = "",
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("freeBytes", freeBytes)
@@ -107,6 +114,10 @@ data class PixelStatus(
         .put("reportedAt", reportedAt)
         .put("trialDoneAt", trialDoneAt)
         .put("cleanupOpenedAt", cleanupOpenedAt)
+        .put("cleanupResult", cleanupResult)
+        .put("cleanupResultAt", cleanupResultAt)
+        .put("accessibilityOn", accessibilityOn)
+        .put("cleanupOpenVia", cleanupOpenVia)
 
     companion object {
         fun fromJson(o: JSONObject): PixelStatus {
@@ -126,6 +137,10 @@ data class PixelStatus(
                 reportedAt = o.optLong("reportedAt"),
                 trialDoneAt = o.optLong("trialDoneAt"),
                 cleanupOpenedAt = o.optLong("cleanupOpenedAt"),
+                cleanupResult = o.optString("cleanupResult", ""),
+                cleanupResultAt = o.optLong("cleanupResultAt"),
+                accessibilityOn = o.optBoolean("accessibilityOn", true),
+                cleanupOpenVia = o.optString("cleanupOpenVia", ""),
             )
         }
     }
@@ -182,7 +197,16 @@ data class RemoteCommand(
         const val CONFIRM_VANISHED = "confirmVanished"
         const val RESEND_VANISHED = "resendVanished"
 
-        val DESTRUCTIVE = setOf(CONFIRM_VANISHED, RESEND_VANISHED)
+        /** 원인 불명 항목 전부를 "포토 확인됨"으로 확정(사용자 확인 대화상자 뒤에만 보냄). 파괴적. */
+        const val CONFIRM_ALL_VANISHED = "confirmAllVanished"
+
+        /** 픽셀 포토의 "공간 확보"를 실행(접근성 서비스가 버튼을 누름). 파괴적 명령 목록에는 없지만 commandId 는 1회만 처리한다. */
+        const val FREE_UP_SPACE = "freeUpSpace"
+
+        val DESTRUCTIVE = setOf(CONFIRM_VANISHED, RESEND_VANISHED, CONFIRM_ALL_VANISHED)
+
+        /** commandId 를 반드시 요구하고 한 번만 처리하는 명령 */
+        val ONCE_ONLY = DESTRUCTIVE + FREE_UP_SPACE
 
         fun fromJson(o: JSONObject) = RemoteCommand(
             type = o.getString("type"),

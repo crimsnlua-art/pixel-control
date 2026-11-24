@@ -45,9 +45,12 @@ import com.pixelrelay.Graph
 import com.pixelrelay.core.BackfillDates
 import com.pixelrelay.core.BackfillMode
 import com.pixelrelay.core.DriveUse
+import com.pixelrelay.core.DriveKnown
 import com.pixelrelay.core.FolderRow
 import com.pixelrelay.core.FolderSelection
+import com.pixelrelay.core.CleanupText
 import com.pixelrelay.core.GB
+import com.pixelrelay.core.HomeText
 import com.pixelrelay.core.SendProgress
 import com.pixelrelay.core.QueueMode
 import com.pixelrelay.core.ReceiverConfig
@@ -123,6 +126,7 @@ private fun SenderHome() {
     val driveAuth by poll(3000) { (Graph.meta.getLong("driveAuthProblem") ?: 0L) == 1L }
     val driveUsed by poll(3000) { Graph.driveUsed() }
     val scanPending by poll(3000) { (Graph.meta.getLong(com.pixelrelay.sender.SenderEngine.KEY_SCAN_PENDING) ?: 0L).toInt() }
+    val sset by poll(3000) { Graph.settings.sender() }
     var msg by remember { mutableStateOf("") }
     var confirmVideo by remember { mutableStateOf(false) }
 
@@ -133,7 +137,7 @@ private fun SenderHome() {
             .map { it.sha }
         SenderScheduler.runNow(ctx, true)
         scope.launch {
-            msg = try { "지금 보내기 요청(주력 폰 대기 파일 + 픽셀에 sendNow: ${Graph.senderCommands.send(RemoteCommand(RemoteCommand.SEND_NOW, expectShas = batchShas))})" }
+            msg = try { HomeText.sendNow(Graph.senderCommands.send(RemoteCommand(RemoteCommand.SEND_NOW, expectShas = batchShas))) }
             catch (e: Exception) { "픽셀에 명령을 보내지 못했습니다: ${FailureText.korean(e, LocalNetworkPermission.granted(ctx))}" }
         }
     }
@@ -145,14 +149,35 @@ private fun SenderHome() {
         val warns = ArrayList<String>()
         if (!Graph.mediaSource.hasFullMediaAccess()) warns += "사진·영상 접근이 전체 허용이 아닙니다. 자동 감지가 멈춰 있습니다."
         if (!Graph.mediaSource.hasLocationAccess()) warns += "위치 정보(미디어 위치) 권한이 없어 파일 전송이 '권한필요'로 대기합니다."
-        DriveUse.homeAuthWarning(driveUsed != false, driveAuth == true)?.let { warns += it }
+        // 연결 안 함을 고른 폰(또는 아직 읽는 중)에서는 드라이브 경고를 띄우지 않는다
+        DriveUse.homeAuthWarning(DriveKnown.used(driveUsed), driveAuth == true)?.let { warns += it }
         val latest = listOfNotNull(lan, drv).maxByOrNull { it.at }
-        latest?.status?.let { st -> DriveUse.visibleWarnings(st.warnings, driveUsed != false) }?.forEach { warns += "픽셀: " + WarnCode.korean(it.code) }
+        HomeText.accessibilityWarning(latest?.status)?.let { warns += it }
+        latest?.status?.let { st -> DriveUse.visibleWarnings(st.warnings, DriveKnown.used(driveUsed)) }?.forEach { warns += "픽셀: " + WarnCode.korean(it.code) }
         if (warns.isNotEmpty()) Section("경고") { warns.forEach { Text("• $it", color = MaterialTheme.colorScheme.error) } }
         DriveUse.skippedNote(driveUsed != false)?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 
         val progress = SendProgress.of(entries.orEmpty(), scanPending ?: 0, driveUsed != false)
         if (progress.lines().isNotEmpty()) Section("보내기 진행") { progress.lines().forEach { Text(it) } }
+        if (entries != null && sset != null) {
+            HomeText.emptyHint(progress.remaining, progress.scanPending, sset!!.backfillMode)?.let {
+                Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        latest?.status?.let { st ->
+            Section("픽셀 공간 확보") {
+                HomeText.pixelSpaceLines(st.freeBytes, st.counts.published, fmtBytes(st.freeBytes)).forEach { Text(it) }
+                Text(CleanupText.resultLine(st.cleanupResult, fmtAgo(HomeText.resultAtOnLocalClock(st, latest?.at ?: 0L))))
+                com.pixelrelay.core.OpenViaText.note(st.cleanupOpenVia)?.let { Text(it) }
+                Button(onClick = {
+                    scope.launch {
+                        msg = try { HomeText.freeUp(Graph.senderCommands.send(RemoteCommand(RemoteCommand.FREE_UP_SPACE))) }
+                        catch (e: Exception) { "픽셀에 명령을 보내지 못했습니다: ${FailureText.korean(e, LocalNetworkPermission.granted(ctx))}" }
+                    }
+                }) { Text("픽셀 공간 확보") }
+            }
+        }
 
         Section("상태별 개수") {
             val c = entries.orEmpty().groupingBy { it.state }.eachCount()
@@ -192,6 +217,7 @@ private fun SenderHome() {
 
 @Composable
 private fun SenderFiles() {
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val entries by poll(2000) { Graph.db.send().all() }
     val filters = listOf(
@@ -205,12 +231,19 @@ private fun SenderFiles() {
     )
     var sel by remember { mutableStateOf(0) }
     var confirmSha by remember { mutableStateOf<String?>(null) }
+    var confirmAll by remember { mutableStateOf(false) }
+    var allMsg by remember { mutableStateOf("") }
     val shown = entries.orEmpty().filter { e -> filters[sel].second?.contains(e.state) ?: true }.sortedByDescending { it.stateAt }.take(300)
 
     Column {
         androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 8.dp)) {
             items(filters.size) { i -> FilterChip(selected = sel == i, onClick = { sel = i }, label = { Text(filters[i].first) }) }
         }
+        val unknownCount = entries.orEmpty().count { it.state == "VANISHED_UNKNOWN" }
+        if (filters[sel].first == "원인 불명" && unknownCount > 0) {
+            Button(onClick = { confirmAll = true }, modifier = Modifier.padding(bottom = 6.dp)) { Text("모두 포토 확인됨으로 확정(${unknownCount}개)") }
+        }
+        if (allMsg.isNotEmpty()) Text(allMsg)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(shown, key = { it.sha }) { e ->
                 Card(Modifier.fillMaxWidth()) {
@@ -239,6 +272,28 @@ private fun SenderFiles() {
         }
     }
 
+    if (confirmAll) {
+        AlertDialog(
+            onDismissRequest = { confirmAll = false },
+            title = { Text("모두 포토 확인됨으로 확정") },
+            text = { Text("원인 불명 항목을 모두 포토 확인됨으로 확정합니다. 먼저 포토 웹(photos.google.com)에서 이 파일들이 원본 화질로 올라가 있는지 확인하세요. 확정하면 드라이브 사본이 영구 삭제됩니다.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmAll = false
+                    scope.launch {
+                        allMsg = try {
+                            // 이 폰 장부는 직접 바꾸지 않는다: 픽셀이 실제로 확정한 항목만 픽셀 장부 동기화(LAN·드라이브)로 반영된다.
+                            // (이 폰의 원인 불명 목록 전체를 확정하면 픽셀이 확정하지 않은 항목까지 잘못 확정될 수 있다)
+                            val route = Graph.senderCommands.send(RemoteCommand(RemoteCommand.CONFIRM_ALL_VANISHED))
+                            SenderScheduler.runNow(Graph.app, false)   // 픽셀 장부 변화를 바로 받아 온다
+                            "픽셀에 모두 확정 요청을 보냈습니다($route). 픽셀이 확정한 항목만 동기화되어 반영됩니다."
+                        } catch (e: Exception) { "픽셀에 명령을 보내지 못했습니다: ${FailureText.korean(e, LocalNetworkPermission.granted(ctx))}" }
+                    }
+                }) { Text("모두 확정") }
+            },
+            dismissButton = { TextButton(onClick = { confirmAll = false }) { Text("취소") } },
+        )
+    }
     confirmSha?.let { sha ->
         AlertDialog(
             onDismissRequest = { confirmSha = null },

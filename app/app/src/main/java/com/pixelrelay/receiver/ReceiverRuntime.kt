@@ -14,6 +14,8 @@ import com.pixelrelay.charge.ChargePolicy
 import com.pixelrelay.charge.NoPlug
 import com.pixelrelay.charge.PlugAction
 import com.pixelrelay.charge.PlugController
+import com.pixelrelay.core.AutoCleanPolicy
+import com.pixelrelay.core.CleanupKeys
 import com.pixelrelay.core.Proto
 import com.pixelrelay.core.RemoteCommand
 import com.pixelrelay.drive.DriveAuthException
@@ -54,7 +56,11 @@ class ReceiverRuntime(private val ctx: Context) {
     val cleaner = Cleaner(g.recvLedger, g.drive)
     val confirmer = PhotosConfirmer(g.recvLedger, g.sink, g.clock, cleaner)
     val core = ReceiverCore(g.recvLedger, g.sink, g.clock, stopped = { chargePolicy.receiveStopped })
-    val commands = CommandHandler(g.recvLedger, configStore, confirmer, g.clock) { wake.trySend(Unit) }
+    val cleanup = CleanupFlow(g.recvLedger, confirmer, g.clock, AndroidCleanupDevice(ctx), scope)
+    val commands = CommandHandler(g.recvLedger, configStore, confirmer, g.clock, { wake.trySend(Unit) }) {
+        cleanup.startAsync(CleanupTrigger.REMOTE)
+        CommandResult(true, "공간 확보 시작")
+    }
     private val driveRx = DriveReceiver(g.drive, core, g.recvLedger, cleaner, { configStore.get() }, g.clock)
 
     val statusBuilder = StatusBuilder(
@@ -64,6 +70,7 @@ class ReceiverRuntime(private val ctx: Context) {
         driveAuthProblem = { driveAuthProblem },
         appVersion = "0.1.0",
         warningBook = g.warningBook,
+        accessibilityOn = { AndroidCleanupDevice.isAccessibilityOn(ctx) },
     )
 
     private var server: LanServer? = null
@@ -86,6 +93,7 @@ class ReceiverRuntime(private val ctx: Context) {
         scope.launch { driveLoop() }
         scope.launch { reportLoop() }
         scope.launch { confirmLoop() }
+        scope.launch { autoCleanLoop() }
     }
 
     @Synchronized
@@ -202,7 +210,7 @@ class ReceiverRuntime(private val ctx: Context) {
         while (scope.isActive) {
             try {
                 val now = g.clock.nowMs()
-                val sig = "${g.recvLedger.maxSeq()}|${g.recvLedger.getLong(com.pixelrelay.core.TrialSignals.KEY_PHOTOS_DONE)}|${g.recvLedger.getLong(PhotosConfirmer.KEY_BUTTON_AT)}|${(lastCharge?.active ?: emptySet()).sorted()}|$driveAuthProblem"
+                val sig = "${g.recvLedger.maxSeq()}|${g.recvLedger.getLong(com.pixelrelay.core.TrialSignals.KEY_PHOTOS_DONE)}|${g.recvLedger.getLong(PhotosConfirmer.KEY_BUTTON_AT)}|${(lastCharge?.active ?: emptySet()).sorted()}|$driveAuthProblem|${g.recvLedger.getLong(CleanupKeys.RESULT_AT)}|${AndroidCleanupDevice.isAccessibilityOn(ctx)}"
                 val due = now - last >= 5 * 60_000L * slow()
                 val changed = sig != lastSig && now - last >= 60_000L
                 if (due || changed) {
@@ -213,6 +221,21 @@ class ReceiverRuntime(private val ctx: Context) {
                 driveAuthProblem = true
             } catch (e: Exception) { /* 다음에 */ }
             delay(20_000L)
+        }
+    }
+
+    // ---- 자동 공간 확보: 남은 공간 6GB 미만 + 포토 확인 대기 있음 -> 30분에 1번까지 ----
+    private suspend fun autoCleanLoop() {
+        while (scope.isActive) {
+            try {
+                val now = g.clock.nowMs()
+                val last = g.recvLedger.getLong(CleanupKeys.AUTO_LAST_AT) ?: 0L
+                if (AutoCleanPolicy.shouldRun(g.sink.freeBytes(), g.recvLedger.counts().published, last, now)) {
+                    g.recvLedger.putLong(CleanupKeys.AUTO_LAST_AT, now)
+                    cleanup.startAsync(CleanupTrigger.AUTO)
+                }
+            } catch (e: Exception) { /* 다음에 */ }
+            delay(60_000L)
         }
     }
 

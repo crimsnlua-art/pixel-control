@@ -55,6 +55,27 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <service
+            android:name=".receiver.PhotosCleanupService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/photos_cleanup_service" />
+        </service>
+
+        <!-- 알림("공간 확보 필요 — 누르면 실행")을 누르면 열리는 투명 화면 -->
+        <activity
+            android:name=".receiver.CleanupTrampolineActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <receiver
             android:name=".update.InstallResultReceiver"
             android:exported="false" />

@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.pixelrelay.Graph
+import com.pixelrelay.core.CleanupText
 import com.pixelrelay.core.GB
 import com.pixelrelay.core.QueueMode
 import com.pixelrelay.core.ReceiverConfig
@@ -84,6 +85,23 @@ private fun ReceiverStatus() {
         if (s != null && s.warnings.isNotEmpty()) {
             Section("경고") { s.warnings.forEach { Text("• ${WarnCode.korean(it.code)}", color = MaterialTheme.colorScheme.error) } }
         }
+        if (s != null) {
+            Section("자동 공간 확보") {
+                if (!s.accessibilityOn) {
+                    Text(CleanupText.ACCESSIBILITY_OFF, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = { Shortcuts.open(ctx, com.pixelrelay.core.Shortcut.ACCESSIBILITY) }) { Text("접근성 설정 열기") }
+                }
+                Text(CleanupText.resultLine(s.cleanupResult, if (s.cleanupResultAt > 0) fmtAgo(s.cleanupResultAt) else ""))
+                com.pixelrelay.core.OpenViaText.note(s.cleanupOpenVia)?.let { Text(it) }
+                Text("남은 공간이 6GB 미만이고 포토 확인 대기 파일이 있으면 30분에 한 번 자동으로 실행합니다.")
+                Button(onClick = {
+                    scope.launch {
+                        Graph.receiver.cleanup.startAsync(com.pixelrelay.receiver.CleanupTrigger.UI)
+                        msg = "자동 공간 확보를 시작했습니다. 결과는 이 화면에 표시됩니다."
+                    }
+                }) { Text("자동 공간 확보 실행") }
+            }
+        }
         Section("서버") {
             Text("서버: ${if (Graph.receiver.serverRunning) "동작 중(포트 ${com.pixelrelay.core.Proto.PORT})" else "멈춤"}")
             Text("주소: ${localIpv4() ?: "와이파이 없음"}")
@@ -104,10 +122,11 @@ private fun ReceiverStatus() {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
             Button(onClick = {
                 scope.launch {
-                    Graph.receiver.commands.handle(RemoteCommand(RemoteCommand.CLEANUP_OPENED), remote = false)
-                    val i = ctx.packageManager.getLaunchIntentForPackage("com.google.android.apps.photos")
-                    msg = if (i != null) { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); "열었습니다. 포토 앱에서 '기기 공간 확보'를 실행하세요. 1시간 안에 사라진 파일만 포토 확인으로 인정됩니다." }
-                    else "구글 포토 앱을 찾지 못했습니다(기록은 남겼습니다)."
+                    msg = when (Graph.receiver.cleanup.openManual()) {
+                        com.pixelrelay.core.PhotosOpen.LINK -> "포토의 공간 확보 화면을 열었습니다. '여유 공간 … 확보'를 누르세요. 1시간 안에 사라진 파일만 포토 확인으로 인정됩니다."
+                        com.pixelrelay.core.PhotosOpen.LAUNCHER -> "공간 확보 링크가 안 열려 포토 기본 화면을 열었습니다. 포토에서 '기기 공간 확보'를 실행하세요."
+                        com.pixelrelay.core.PhotosOpen.FAILED -> "구글 포토 앱을 찾지 못했습니다(기록은 남겼습니다)."
+                    }
                 }
             }) { Text("포토 공간 확보 열기") }
             OutlinedButton(onClick = {
@@ -191,9 +210,15 @@ private fun ReceiverUnknown() {
     val scope = rememberCoroutineScope()
     val rows by poll(3000) { Graph.recvLedger.all().filter { it.state == RecvState.VANISHED_UNKNOWN.name } }
     var confirm by remember { mutableStateOf<String?>(null) }
+    var confirmAll by remember { mutableStateOf(false) }
+    var allMsg by remember { mutableStateOf("") }
     Column(Modifier.verticalScroll(rememberScrollState())) {
         Text("원인 불명(사라짐) 항목", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(vertical = 8.dp))
         Text("포토 공간 확보 기록 없이 파일이 사라진 항목입니다. 드라이브 사본은 그대로 유지됩니다. 다시 보내기는 주력 폰에서 합니다.")
+        if (rows.orEmpty().isNotEmpty()) {
+            Button(onClick = { confirmAll = true }) { Text("모두 포토 확인됨으로 확정(${rows.orEmpty().size}개)") }
+        }
+        if (allMsg.isNotEmpty()) Text(allMsg)
         rows.orEmpty().forEach { e ->
             Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                 Column(Modifier.padding(10.dp)) {
@@ -203,6 +228,25 @@ private fun ReceiverUnknown() {
             }
         }
         if (rows.orEmpty().isEmpty()) Text("없습니다.")
+    }
+    if (confirmAll) {
+        AlertDialog(
+            onDismissRequest = { confirmAll = false },
+            title = { Text("모두 포토 확인됨으로 확정") },
+            text = { Text("원인 불명 ${rows.orEmpty().size}개를 모두 포토 확인됨으로 확정합니다. 먼저 포토 웹(photos.google.com)에서 이 파일들이 원본 화질로 올라가 있는지 확인하세요. 확정하면 드라이브 사본이 영구 삭제됩니다.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmAll = false
+                    scope.launch {
+                        val r = Graph.receiver.commands.handle(
+                            RemoteCommand(RemoteCommand.CONFIRM_ALL_VANISHED, id = java.util.UUID.randomUUID().toString()), remote = false,
+                        )
+                        allMsg = r.message
+                    }
+                }) { Text("모두 확정") }
+            },
+            dismissButton = { TextButton(onClick = { confirmAll = false }) { Text("취소") } },
+        )
     }
     confirm?.let { sha ->
         AlertDialog(

@@ -1,6 +1,7 @@
 package com.pixelrelay.receiver
 
 import com.pixelrelay.charge.WarningBook
+import com.pixelrelay.core.CleanupKeys
 import com.pixelrelay.core.Clock
 import com.pixelrelay.core.GB
 import com.pixelrelay.core.MetaStore
@@ -42,6 +43,8 @@ class StatusBuilder(
     private val driveAuthProblem: () -> Boolean,
     private val appVersion: String,
     private val warningBook: WarningBook,
+    /** 접근성 서비스(자동 공간 확보)가 켜져 있는가 */
+    private val accessibilityOn: () -> Boolean = { true },
 ) {
     companion object {
         const val STALL_MS = 6 * 3_600_000L
@@ -74,6 +77,10 @@ class StatusBuilder(
             reportedAt = now,
             trialDoneAt = ledger.getLong(com.pixelrelay.core.TrialSignals.KEY_PHOTOS_DONE) ?: 0L,
             cleanupOpenedAt = ledger.getLong(PhotosConfirmer.KEY_BUTTON_AT) ?: 0L,
+            cleanupResult = ledger.getString(CleanupKeys.RESULT) ?: "",
+            cleanupResultAt = ledger.getLong(CleanupKeys.RESULT_AT) ?: 0L,
+            accessibilityOn = accessibilityOn(),
+            cleanupOpenVia = ledger.getString(CleanupKeys.OPEN_VIA) ?: "",
         )
     }
 
@@ -88,7 +95,8 @@ class StatusBuilder(
     }
 }
 
-data class CommandResult(val ok: Boolean, val message: String)
+/** shas: 일괄 처리 명령이 실제로 바꾼 항목(커밋 뒤 드라이브 사본 정리에 쓴다). */
+data class CommandResult(val ok: Boolean, val message: String, val shas: List<String> = emptyList())
 
 /** 받는 쪽 명령 처리 (설계서 7절). 원격 명령은 LAN /command 와 드라이브 commands/ 두 경로로 온다. */
 class CommandHandler(
@@ -98,6 +106,8 @@ class CommandHandler(
     private val clock: Clock,
     /** 수신 루프를 바로 깨우는 콜백 */
     private val wake: () -> Unit = {},
+    /** FREE_UP_SPACE 처리(자동 공간 확보 시작). 없으면 이 명령은 실패로 답한다. 바로 돌려주고 실제 일은 뒤에서 한다. */
+    private val freeUp: (suspend () -> CommandResult)? = null,
 ) {
     companion object {
         const val KEY_CMD_IDS = "processedCommandIds"
@@ -126,6 +136,7 @@ class CommandHandler(
      * 실패해도 PHOTOS_CONFIRMED 상태를 보고 정리하는 기존 구조(Cleaner.cleanAllConfirmed)가 다시 시도한다.
      */
     suspend fun handle(cmd: RemoteCommand, remote: Boolean): CommandResult {
+        if (cmd.type == RemoteCommand.FREE_UP_SPACE) return handleFreeUp(cmd)
         if (cmd.type !in RemoteCommand.DESTRUCTIVE) return dispatch(cmd, remote)
         val id = cmd.id
         if (id.isNullOrBlank()) return CommandResult(false, "commandId 필요")
@@ -144,7 +155,21 @@ class CommandHandler(
         if (r.ok && cmd.type == RemoteCommand.CONFIRM_VANISHED) {
             cmd.sha?.let { runCatching { confirmer.cleanAfterConfirm(it) } }
         }
+        if (r.ok && cmd.type == RemoteCommand.CONFIRM_ALL_VANISHED) {
+            // 항목마다 단건 확정과 같은 뒤처리(커밋 뒤 드라이브 사본 정리). 하나가 실패해도 나머지는 계속하고, 실패분은 cleanAllConfirmed 가 다시 시도한다.
+            for (sha in r.shas) runCatching { confirmer.cleanAfterConfirm(sha) }
+        }
         return r
+    }
+
+    /** 공간 확보 명령: 파괴적 목록에는 없지만 commandId 는 필수이고 한 번만 처리한다. 실제 실행은 커밋(commandId 기록) 뒤에 한다. */
+    private suspend fun handleFreeUp(cmd: RemoteCommand): CommandResult {
+        val id = cmd.id
+        if (id.isNullOrBlank()) return CommandResult(false, "commandId 필요")
+        val fresh = idMutex.withLock { ledger.inTransaction { consumeCommandId(id) } }
+        if (!fresh) return CommandResult(false, "이미 처리한 commandId")
+        val f = freeUp ?: return CommandResult(false, "공간 확보 기능 없음")
+        return try { f() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { CommandResult(false, "공간 확보 시작 실패: ${e.message}") }
     }
 
     private suspend fun dispatch(cmd: RemoteCommand, remote: Boolean): CommandResult = when (cmd.type) {
@@ -181,6 +206,12 @@ class CommandHandler(
             val sha = cmd.sha
             if (sha == null) CommandResult(false, "sha 없음")
             else if (confirmer.userConfirmTransition(sha)) CommandResult(true, "포토 확인됨으로 확정") else CommandResult(false, "대상 아님")
+        }
+        RemoteCommand.CONFIRM_ALL_VANISHED -> {
+            // 단건 확정과 같은 전이(userConfirmTransition)를 원인 불명 항목마다 적용. 드라이브 사본 정리는 handle() 이 커밋 뒤에 한다.
+            val targets = ledger.all().filter { it.stateEnum == RecvState.VANISHED_UNKNOWN }.map { it.sha }
+            val done = targets.filter { confirmer.userConfirmTransition(it) }
+            if (done.isEmpty()) CommandResult(false, "대상 없음") else CommandResult(true, "${done.size}개를 포토 확인됨으로 확정", done)
         }
         else -> CommandResult(false, "알 수 없는 명령")
     }

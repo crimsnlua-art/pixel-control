@@ -207,7 +207,7 @@ fun AccountSection(allowSkip: Boolean = false) {
             OutlinedButton(onClick = { scope.launch { Graph.meta.putLong(com.pixelrelay.core.DriveUse.KEY_SKIPPED, 0); msg = "연결 안 함을 해제했습니다" } }) { Text("연결 안 함 해제") }
         } else {
             OutlinedButton(onClick = {
-                scope.launch { Graph.meta.putLong(com.pixelrelay.core.DriveUse.KEY_SKIPPED, 1); msg = "연결 안 함으로 설정했습니다(집 와이파이 전용). 집 밖 전송은 쓰지 않습니다." }
+                scope.launch { com.pixelrelay.core.DriveUse.setSkipped(Graph.meta, true); msg = "연결 안 함으로 설정했습니다(집 와이파이 전용). 집 밖 전송은 쓰지 않습니다." }
             }) { Text("연결 안 함(집 와이파이에서만 보내기)") }
         }
         if (msg.isNotEmpty()) Text(msg)

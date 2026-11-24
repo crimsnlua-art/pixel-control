@@ -200,12 +200,12 @@ class WizardLogicTest {
     fun `역할별 단계 목록 - 확인 가능한 것은 자동 불가능한 것은 사용자 체크`() {
         val r = WizardSteps.forRole("receiver"); val s = WizardSteps.forRole("sender")
         assertEquals(
-            listOf(WizardIds.PERMISSIONS, WizardIds.BATTERY, WizardIds.LOCK_SCREEN, WizardIds.SMART_STORAGE, WizardIds.PHOTOS_BACKUP, WizardIds.GOOGLE, WizardIds.PAIRING),
+            listOf(WizardIds.PERMISSIONS, WizardIds.BATTERY, WizardIds.LOCK_SCREEN, WizardIds.SMART_STORAGE, WizardIds.PHOTOS_BACKUP, WizardIds.PHOTOS_FOLDER_ON, WizardIds.ACCESSIBILITY, WizardIds.GOOGLE, WizardIds.PAIRING),
             r.map { it.id },
         )
         assertEquals(listOf(WizardIds.PERMISSIONS, WizardIds.BATTERY, WizardIds.PHOTOS_OFF, WizardIds.GOOGLE, WizardIds.PAIRING), s.map { it.id })
         for (st in r + s) when (st.id) {
-            WizardIds.PERMISSIONS, WizardIds.BATTERY, WizardIds.GOOGLE, WizardIds.PAIRING -> assertEquals(StepKind.AUTO, st.kind)
+            WizardIds.PERMISSIONS, WizardIds.BATTERY, WizardIds.ACCESSIBILITY, WizardIds.GOOGLE, WizardIds.PAIRING -> assertEquals(StepKind.AUTO, st.kind)
             else -> assertEquals(StepKind.MANUAL, st.kind)
         }
         // 바로가기가 있는 단계는 인텐트가 안 열릴 때를 위한 글 안내를 가진다
@@ -225,14 +225,14 @@ class WizardLogicTest {
         p = WizardProgress(emptyMap(), setOf(WizardIds.PERMISSIONS))
         assertEquals(0, p.doneCount(steps))
         p = WizardProgress(
-            mapOf(WizardIds.PERMISSIONS to true, WizardIds.BATTERY to true, WizardIds.GOOGLE to true, WizardIds.PAIRING to true),
+            mapOf(WizardIds.PERMISSIONS to true, WizardIds.BATTERY to true, WizardIds.ACCESSIBILITY to true, WizardIds.GOOGLE to true, WizardIds.PAIRING to true),
             setOf(WizardIds.LOCK_SCREEN, WizardIds.SMART_STORAGE),
         )
-        assertEquals(6, p.doneCount(steps)); assertFalse(p.allDone(steps))
+        assertEquals(7, p.doneCount(steps)); assertFalse(p.allDone(steps))
         assertEquals(WizardIds.PHOTOS_BACKUP, p.firstUndone(steps)!!.id)
         p = WizardProgress(
-            mapOf(WizardIds.PERMISSIONS to true, WizardIds.BATTERY to true, WizardIds.GOOGLE to true, WizardIds.PAIRING to true),
-            setOf(WizardIds.LOCK_SCREEN, WizardIds.SMART_STORAGE, WizardIds.PHOTOS_BACKUP),
+            mapOf(WizardIds.PERMISSIONS to true, WizardIds.BATTERY to true, WizardIds.ACCESSIBILITY to true, WizardIds.GOOGLE to true, WizardIds.PAIRING to true),
+            setOf(WizardIds.LOCK_SCREEN, WizardIds.SMART_STORAGE, WizardIds.PHOTOS_BACKUP, WizardIds.PHOTOS_FOLDER_ON),
         )
         assertTrue(p.allDone(steps)); assertNull(p.firstUndone(steps))
     }
